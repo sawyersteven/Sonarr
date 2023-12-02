@@ -28,21 +28,21 @@ namespace NzbDrone.Core.Download.Clients.RSS
             ReadOnly = true;
         }
 
-        [FieldDefinition(1, Label = "RSS Feed Output Directory", Type = FieldType.Path, HelpText = "Directory in which to write sonarr.rss")]
+        [FieldDefinition(1, Label = "TorrentRSSFeedOutputDirectory", Type = FieldType.Path, HelpText = "TorrentRSSOutputDirectoryHelpText")]
         public string RSSDirectory { get; set; }
 
-        [FieldDefinition(1, Label = "RSSWatchFolder", Type = FieldType.Path, HelpText = "Directory to watch for post-processing")]
+        [FieldDefinition(1, Label = "TorrentRSSWatchFolder", Type = FieldType.Path, HelpText = "TorrentRSSWatchFolderHelpText")]
         public string WatchFolder { get; set; }
 
         [DefaultValue(200)]
-        [FieldDefinition(1, Label = "Maximum Number of RSS Entries", Type = FieldType.Number)]
+        [FieldDefinition(1, Label = "MaximumNumberofRSSEntries", Type = FieldType.Number)]
         public int MaxItems { get; set; }
 
         public string RSSFilePath => Path.Combine(RSSDirectory, "sonar.rss");
 
         [DefaultValue(false)]
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Populate)]
-        [FieldDefinition(4, Label = "RSSFilesReadOnly", Type = FieldType.Checkbox, HelpText = "RSSFilesReadOnlyHelpText")]
+        [FieldDefinition(4, Label = "TorrentRSSFilesReadOnly", Type = FieldType.Checkbox, HelpText = "TorrentRSSFilesReadOnlyHelpText")]
         public bool ReadOnly { get; set; }
 
         public NzbDroneValidationResult Validate()
