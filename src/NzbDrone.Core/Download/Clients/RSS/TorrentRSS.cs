@@ -1,15 +1,15 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
+using System.Text;
 using System.Xml.Linq;
 using FluentValidation.Results;
 using NLog;
 using NzbDrone.Common.Disk;
-using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Blocklisting;
 using NzbDrone.Core.Configuration;
+using NzbDrone.Core.Download.Clients.Blackhole;
 using NzbDrone.Core.Localization;
 using NzbDrone.Core.MediaFiles.TorrentInfo;
 using NzbDrone.Core.Parser.Model;
@@ -20,9 +20,12 @@ namespace NzbDrone.Core.Download.Clients.RSS
 {
     public class TorrentRSS : TorrentClientBase<TorrentRSSSettings>
     {
+        private readonly IScanWatchFolder _scanWatchFolder;
+        public TimeSpan ScanGracePeriod { get; set; }
         private object _FileLock = new object();
 
-        public TorrentRSS(ITorrentFileInfoReader torrentFileInfoReader,
+        public TorrentRSS(IScanWatchFolder scanWatchFolder,
+                          ITorrentFileInfoReader torrentFileInfoReader,
                           IHttpClient httpClient,
                           IConfigService configService,
                           IDiskProvider diskProvider,
@@ -32,6 +35,8 @@ namespace NzbDrone.Core.Download.Clients.RSS
                           Logger logger)
         : base(torrentFileInfoReader, httpClient, configService, diskProvider, remotePathMappingService, localizationService, blocklistService, logger)
         {
+            _scanWatchFolder = scanWatchFolder;
+            ScanGracePeriod = TimeSpan.FromSeconds(30);
         }
 
         public override string Name => _localizationService.GetLocalizedString("TorrentRSS");
@@ -48,15 +53,22 @@ namespace NzbDrone.Core.Download.Clients.RSS
                     return null;
                 }
 
-                var children = channel.Descendants();
+                var children = channel.Descendants("item");
+                var a = children.Count();
+                if (children.Any(x => x.Descendants("guid").FirstOrDefault()?.Value.Equals(hash) ?? false))
+                {
+                    _logger.Debug("Entry for hash {0} already exists in rss document", hash);
+                    return null;
+                }
+
                 while (children.Count() >= Settings.MaxItems)
                 {
-                    children.Last().Remove();
+                    children.First().Remove();
                 }
 
                 channel.Add(MakeElementFromRelease(remoteEpisode, hash, magnetLink));
 
-                _diskProvider.WriteAllText(Settings.RSSFilePath, xDoc.ToString());
+                WriteXMLToFile(xDoc);
 
                 _logger.Debug("Added XML item to RSS file {0}", Settings.RSSDirectory);
                 return null;
@@ -71,26 +83,24 @@ namespace NzbDrone.Core.Download.Clients.RSS
 
         public override IEnumerable<DownloadClientItem> GetItems()
         {
-            XDocument xDoc = null;
-            lock (_FileLock)
+            foreach (var item in _scanWatchFolder.GetItems(Settings.WatchFolder, ScanGracePeriod))
             {
-                xDoc = ReadExistingXML();
-            }
-
-            var children = xDoc.Descendants("channel").FirstOrDefault()?.Descendants();
-
-            foreach (var item in children)
-            {
-                item.TryGetAttributeValue("title", out var itemName);
-
                 yield return new DownloadClientItem
                 {
                     DownloadClientInfo = DownloadClientItemClientInfo.FromDownloadClient(this),
-                    DownloadId = Definition.Name + "_" + itemName,
+                    DownloadId = Definition.Name + "_" + item.DownloadId,
                     Category = "sonarr",
-                    Title = itemName,
-                    CanMoveFiles = true,
-                    CanBeRemoved = true
+                    Title = item.Title,
+
+                    TotalSize = item.TotalSize,
+                    RemainingTime = item.RemainingTime,
+
+                    OutputPath = item.OutputPath,
+
+                    Status = item.Status,
+
+                    CanMoveFiles = !Settings.ReadOnly,
+                    CanBeRemoved = !Settings.ReadOnly
                 };
             }
         }
@@ -110,7 +120,7 @@ namespace NzbDrone.Core.Download.Clients.RSS
             return new DownloadClientInfo
             {
                 IsLocalhost = true,
-                OutputRootFolders = new List<OsPath>() { new OsPath(Settings.RSSDirectory) }
+                OutputRootFolders = new List<OsPath>() { new OsPath(Settings.WatchFolder) }
             };
         }
 
@@ -119,11 +129,10 @@ namespace NzbDrone.Core.Download.Clients.RSS
             // Write base xml to filepath
             try
             {
-                _diskProvider.WriteAllText(Settings.RSSFilePath, MakeEmptyXML().ToString());
+                WriteXMLToFile(MakeEmptyXML());
             }
-            catch (Exception e)
+            catch (Exception)
             {
-                var a = e;
                 failures.Add(new NzbDroneValidationFailure("RSS Feed Output Directory", "Cannot write to RSS file")
                 {
                     DetailedDescription = string.Format("The folder you specified does not exist or is inaccessible. Please verify the folder permissions for the user account '{0}', which is used to execute Sonarr.", Environment.UserName)
@@ -131,7 +140,7 @@ namespace NzbDrone.Core.Download.Clients.RSS
             }
         }
 
-        public static string FormatPubDate(DateTime now) => now.ToString("ddd',' d MMM yyyy HH':'mm':'ss") + " " + now.ToString("zzzz").Replace(":", "");
+        private static string FormatPubDate(DateTime now) => now.ToString("ddd',' d MMM yyyy HH':'mm':'ss") + " " + now.ToString("zzzz").Replace(":", "");
 
         private XElement MakeElementFromRelease(RemoteEpisode remoteEpisode, string hash, string magnetLink)
         {
@@ -148,14 +157,26 @@ namespace NzbDrone.Core.Download.Clients.RSS
             return elem;
         }
 
-        private XDocument ReadExistingXML()
+        private void WriteXMLToFile(XDocument xDoc)
         {
-            if (!File.Exists(Settings.RSSDirectory))
+            using (var stream = _diskProvider.OpenWriteStream(Settings.RSSFilePath))
+            {
+                var data = new UTF8Encoding(true).GetBytes(xDoc.ToString());
+                stream.Write(data, 0, data.Length);
+            }
+        }
+
+        public XDocument ReadExistingXML()
+        {
+            if (!_diskProvider.FileExists(Settings.RSSFilePath))
             {
                 return MakeEmptyXML();
             }
 
-            return XDocument.Load(Settings.RSSDirectory);
+            using (var stream = _diskProvider.OpenReadStream(Settings.RSSFilePath))
+            {
+                return XDocument.Load(stream);
+            }
         }
 
         private XDocument MakeEmptyXML()
